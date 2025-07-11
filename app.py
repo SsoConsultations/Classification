@@ -12,7 +12,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from docx import Document
 from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
+from docx.oxml.ns import qn # Used for advanced docx features, but not strictly necessary for basic text/image
 import io
 import warnings
 from PIL import Image # For loading image
@@ -30,19 +30,23 @@ if "file_uploader_key" not in st.session_state:
 # Authentication status
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-# Store processed data and target for consistent access
+# Store processed data and target for consistent access across reruns
 if "X_processed" not in st.session_state:
     st.session_state.X_processed = None
 if "y_processed" not in st.session_state:
     st.session_state.y_processed = None
-if "original_df_with_target" not in st.session_state:
-    st.session_state.original_df_with_target = None
-if "feature_names" not in st.session_state:
-    st.session_state.feature_names = []
-if "target_name" not in st.session_state:
-    st.session_state.target_name = None
+# Store the LabelEncoder instance if the target was encoded (for inverse transform)
 if "label_encoder" not in st.session_state:
     st.session_state.label_encoder = None
+# Store the original DataFrame rows that survived preprocessing (e.g., after dropna)
+if "original_df_with_target" not in st.session_state:
+    st.session_state.original_df_with_target = None
+# Store final feature names after one-hot encoding for feature importance display
+if "feature_names" not in st.session_state:
+    st.session_state.feature_names = []
+# Store the selected target column name
+if "target_name" not in st.session_state:
+    st.session_state.target_name = None
 
 
 # Page config
@@ -124,7 +128,8 @@ def preprocess_data(df, target_column_name, numeric_features, categorical_featur
     """
     Preprocesses the data for classification: handles missing values, encodes categorical
     features, scales numeric features, and encodes the target variable if necessary.
-    Returns processed features (X) and target (y), along with the LabelEncoder if used.
+    Returns processed features (X) and target (y), along with the LabelEncoder if used,
+    and the original DataFrame rows that were kept after missing value handling.
     """
     df_proc = df.copy()
 
@@ -135,10 +140,11 @@ def preprocess_data(df, target_column_name, numeric_features, categorical_featur
     # Ensure only selected features are processed
     X_selected = X[numeric_features + categorical_features].copy()
 
-    # Handle missing values
+    # --- Handle missing values ---
     if missing_strategy == "drop_rows":
-        # Drop rows with NaNs in selected features or target
-        combined_df = pd.concat([X_selected, y], axis=1).dropna()
+        # Create a combined DataFrame for dropping rows based on NaNs in selected features OR target
+        combined_df = pd.concat([X_selected, y], axis=1)
+        combined_df.dropna(inplace=True)
         X_selected = combined_df[X_selected.columns]
         y = combined_df[target_column_name]
     else: # impute
@@ -148,21 +154,23 @@ def preprocess_data(df, target_column_name, numeric_features, categorical_featur
         for col in categorical_features:
             if col in X_selected.columns:
                 X_selected[col].fillna(X_selected[col].mode()[0], inplace=True)
-        # For target, if it has NaNs and is numeric, impute with mode (for classification)
-        # If categorical, mode is appropriate. If numeric, mode or median. Let's use mode for simplicity.
+        # For target, if it has NaNs, impute with mode (most frequent class)
         if y.isnull().any():
             y.fillna(y.mode()[0], inplace=True)
 
-    # Encode target variable if it's categorical (e.g., 'Yes'/'No' to 0/1)
+    # Store the original DataFrame rows that survived missing value handling
+    # This is crucial for merging predictions back to the original data structure later
+    original_df_retained_rows = df_proc.loc[X_selected.index].copy()
+
+    # --- Encode target variable if it's categorical (e.g., 'Yes'/'No' to 0/1) ---
     label_encoder = None
     if y.dtype == 'object' or pd.api.types.is_categorical_dtype(y):
         label_encoder = LabelEncoder()
         y_encoded = label_encoder.fit_transform(y)
-        st.session_state.label_encoder = label_encoder # Store for inverse transform later
     else:
-        y_encoded = y.values # Ensure it's a numpy array
+        y_encoded = y.values # Ensure it's a numpy array for consistency
 
-    # One-Hot Encode categorical features
+    # --- One-Hot Encode categorical features ---
     encoded_feature_names = []
     if categorical_features:
         encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
@@ -172,26 +180,30 @@ def preprocess_data(df, target_column_name, numeric_features, categorical_featur
         X_selected = pd.concat([X_selected, enc_df], axis=1)
         encoded_feature_names = encoder.get_feature_names_out(categorical_features).tolist()
 
-    # Standard Scale numeric features
-    scaled_feature_names = numeric_features + encoded_feature_names
-    if scaled_feature_names: # Only scale if there are features to scale
+    # --- Standard Scale numeric features ---
+    # Combine original numeric feature names with newly encoded feature names
+    features_to_scale = numeric_features + encoded_feature_names
+    
+    X_processed = X_selected.copy() # Start with the current state of X_selected
+
+    if features_to_scale: # Only scale if there are features to scale
         scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(X_selected[scaled_feature_names])
-        X_processed = pd.DataFrame(scaled_data, columns=scaled_feature_names, index=X_selected.index)
-    else:
-        X_processed = pd.DataFrame(index=X_selected.index) # Empty DataFrame if no features
+        # Apply scaling only to the features that need it
+        X_processed[features_to_scale] = scaler.fit_transform(X_processed[features_to_scale])
+    
+    # Ensure all columns are handled and named correctly
+    # If there were no numeric or categorical features selected, X_processed might be empty or not fully transformed.
+    # The columns of X_processed should now represent all processed features.
+    final_feature_names = X_processed.columns.tolist()
 
-    # Store feature names for later use (e.g., feature importance)
-    st.session_state.feature_names = X_processed.columns.tolist()
-
-    return X_processed, y_encoded, label_encoder, df_proc.loc[X_processed.index] # Return original df rows that were kept
+    return X_processed, y_encoded, label_encoder, original_df_retained_rows, final_feature_names
 
 # Function to safely format metrics or return 'N/A'
 def format_metric(value):
     return f'{value:.4f}' if isinstance(value, (int, float)) else "N/A"
 
 # Re-integrated create_report function for Classification
-def create_report(document, algorithm, params, metrics, data_preview_df, confusion_matrix_plot_bytes, roc_curve_plot_bytes, feature_importance_plot_bytes, classification_report_text, target_name, feature_names):
+def create_report(document, algorithm, params, metrics, data_preview_df, confusion_matrix_plot_bytes, roc_curve_plot_bytes, feature_importance_plot_bytes, classification_report_text, target_name, feature_names, class_labels):
     """Generates a comprehensive Word document report for classification."""
 
     # --- Add logo to report ---
@@ -215,6 +227,8 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
         "The goal is to predict the target variable based on the selected features."
     )
     document.add_paragraph(f"Target Variable: **{target_name}**")
+    document.add_paragraph(f"Classes: {', '.join(class_labels)}")
+
 
     document.add_heading('2. Classification Parameters', level=2)
     document.add_paragraph(f"Algorithm Used: {algorithm}")
@@ -227,13 +241,13 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
     document.add_paragraph(f"Precision: {format_metric(metrics.get('precision'))}")
     document.add_paragraph(f"Recall: {format_metric(metrics.get('recall'))}")
     document.add_paragraph(f"F1-Score: {format_metric(metrics.get('f1_score'))}")
-    if metrics.get('roc_auc') is not None:
+    if not np.isnan(metrics.get('roc_auc', np.nan)): # Check if ROC AUC is a valid number
         document.add_paragraph(f"ROC AUC Score: {format_metric(metrics.get('roc_auc'))}")
     document.add_paragraph(
         "These metrics evaluate the performance of the classification model. "
         "Accuracy is the proportion of correct predictions. Precision is the ability of the classifier not to label as positive a sample that is negative. "
         "Recall is the ability of the classifier to find all the positive samples. F1-score is the weighted average of Precision and Recall. "
-        "ROC AUC measures the area under the Receiver Operating Characteristic curve, indicating the model's ability to distinguish between classes."
+        "ROC AUC measures the area under the Receiver Operating Characteristic curve, indicating the model's ability to distinguish between classes (primarily for binary classification)."
     )
 
     document.add_heading('4. Detailed Classification Report', level=2)
@@ -254,34 +268,43 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
 
     document.add_heading('6. Model Visualizations', level=2)
     if confusion_matrix_plot_bytes:
-        document.add_paragraph("Confusion Matrix: Visualizes the performance of a classification model on a set of test data.")
+        document.add_paragraph("Confusion Matrix: Visualizes the performance of a classification model on a set of test data, showing true vs. predicted counts for each class.")
         document.add_picture(io.BytesIO(confusion_matrix_plot_bytes), width=Inches(5))
     else:
         document.add_paragraph("Confusion Matrix plot could not be generated.")
 
     if roc_curve_plot_bytes:
-        document.add_paragraph("ROC Curve: Illustrates the diagnostic ability of a binary classifier system as its discrimination threshold is varied.")
+        document.add_paragraph("ROC Curve: Illustrates the diagnostic ability of a binary classifier system as its discrimination threshold is varied. A curve closer to the top-left corner indicates better performance.")
         document.add_picture(io.BytesIO(roc_curve_plot_bytes), width=Inches(5))
     else:
         document.add_paragraph("ROC Curve plot could not be generated (e.g., not binary classification or probabilities not available).")
 
     if feature_importance_plot_bytes:
-        document.add_paragraph("Feature Importance Plot: Shows the relative importance of each feature in predicting the target variable.")
+        document.add_paragraph("Feature Importance Plot: Shows the relative importance of each feature in predicting the target variable. Higher importance means the feature had a greater impact on the model's decisions.")
         document.add_picture(io.BytesIO(feature_importance_plot_bytes), width=Inches(6))
     else:
-        document.add_paragraph("Feature Importance plot could not be generated (e.g., model does not support it).")
+        document.add_paragraph("Feature Importance plot could not be generated (e.g., model does not support it or no features selected).")
 
     document.add_heading('7. Prescriptive Insights', level=2)
     document.add_paragraph(
-        "Based on the model's performance and feature importance, here are some potential actionable insights: "
-        "*[Consider key features that strongly influence the prediction. For example, if 'customer tenure' is a high importance feature for churn prediction, a prescriptive insight could be: 'Develop loyalty programs for customers with lower tenure to reduce churn risk.']*"
+        "Based on the model's performance and the identified feature importances, here are some potential actionable insights. "
+        "These insights aim to translate model findings into practical recommendations for business strategy. "
     )
-    # You can add more specific insights here based on feature importances or common patterns in your domain.
-    if feature_names and metrics.get('feature_importances') is not None:
-        sorted_indices = np.argsort(metrics['feature_importances'])[::-1]
-        top_features = [feature_names[i] for i in sorted_indices[:5]] # Top 5 features
-        document.add_paragraph(f"Top 5 most important features: {', '.join(top_features)}")
-
+    
+    # Generate more specific insights based on top features
+    if feature_names and metrics.get('feature_importances') is not None and len(feature_names) == len(metrics['feature_importances']):
+        importance_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': metrics['feature_importances']
+        }).sort_values(by='Importance', ascending=False)
+        
+        top_features = importance_df['Feature'].head(5).tolist() # Top 5 features
+        
+        document.add_paragraph(f"**Key Drivers Identified:** The model indicates that features such as **{', '.join(top_features)}** are among the most influential in predicting **{target_name}**. Further investigation into these areas could yield significant insights.")
+        document.add_paragraph(f"**Potential Actions:** Consider strategies that target or leverage these key features. For example, if 'MonthlyCharges' is highly important for churn prediction, analyzing pricing strategies or offering tailored plans might be effective.")
+        document.add_paragraph(f"**Further Exploration:** Delve deeper into the characteristics of each predicted class (e.g., 'Churn' vs. 'No Churn' customers) based on these important features to craft highly targeted interventions.")
+    else:
+        document.add_paragraph("Specific prescriptive insights based on feature importance could not be generated as feature importance data was unavailable.")
 
     document.add_page_break()
 
@@ -421,7 +444,7 @@ def main_app():
             with st.spinner("Preprocessing your data..."):
                 try:
                     # Pass df_filtered to preprocess_data as it contains the target and selected features
-                    st.session_state.X_processed, st.session_state.y_processed, st.session_state.label_encoder, st.session_state.original_df_with_target = \
+                    st.session_state.X_processed, st.session_state.y_processed, st.session_state.label_encoder, st.session_state.original_df_with_target, st.session_state.feature_names = \
                         preprocess_data(df_filtered, target_column, selected_numeric_features, selected_categorical_features, missing_strategy)
 
                     st.success("✅ Preprocessing complete!")
@@ -435,15 +458,23 @@ def main_app():
                     st.session_state.y_processed = None
                     st.stop()
 
+            # Crucial checks after preprocessing
             if st.session_state.X_processed is not None and st.session_state.y_processed is not None:
-                if len(np.unique(st.session_state.y_processed)) < 2:
-                    st.error("The target variable must have at least two unique classes for classification. Please check your data or target selection.")
-                    st.session_state.analysis_completed = False
-                    st.stop()
                 if st.session_state.X_processed.shape[0] < 2:
                     st.error("Not enough samples after preprocessing. Please check your data and missing value strategy.")
                     st.session_state.analysis_completed = False
                     st.stop()
+                if len(np.unique(st.session_state.y_processed)) < 2:
+                    st.error("The target variable must have at least two unique classes for classification. Please check your data or target selection.")
+                    st.session_state.analysis_completed = False
+                    st.stop()
+                
+                # Determine class labels for display and report
+                if st.session_state.label_encoder:
+                    class_labels = list(st.session_state.label_encoder.classes_)
+                else:
+                    class_labels = [str(x) for x in np.unique(st.session_state.y_processed)]
+                st.write(f"Detected classes in target variable: {', '.join(class_labels)}")
 
                 st.header("4️⃣ Train-Test Split")
                 st.markdown("""
@@ -453,6 +484,7 @@ def main_app():
                 test_size = st.slider("Select Test Data Size (%)", 10, 50, 20) / 100
 
                 # Perform train-test split
+                # stratify ensures that the proportion of target classes is the same in train and test sets
                 X_train, X_test, y_train, y_test = train_test_split(
                     st.session_state.X_processed, st.session_state.y_processed,
                     test_size=test_size, random_state=42, stratify=st.session_state.y_processed
@@ -467,10 +499,10 @@ def main_app():
 
                 # Define models to evaluate
                 models = {
-                    "Logistic Regression": LogisticRegression(random_state=42, solver='liblinear'),
+                    "Logistic Regression": LogisticRegression(random_state=42, solver='liblinear', max_iter=1000),
                     "Random Forest Classifier": RandomForestClassifier(random_state=42),
                     "Gradient Boosting Classifier": GradientBoostingClassifier(random_state=42),
-                    # "Support Vector Classifier": SVC(random_state=42, probability=True) # SVC can be very slow
+                    # "Support Vector Classifier": SVC(random_state=42, probability=True) # SVC can be very slow on large datasets
                 }
 
                 evaluation_results = []
@@ -482,12 +514,13 @@ def main_app():
                             y_pred = model.predict(X_test)
                             
                             accuracy = accuracy_score(y_test, y_pred)
+                            # Use zero_division=0 to avoid warnings if a class has no predicted samples
                             precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
                             recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
                             f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
                             
                             roc_auc = np.nan
-                            # Calculate ROC AUC only for binary classification
+                            # Calculate ROC AUC only for binary classification and models that support predict_proba
                             if len(np.unique(y_test)) == 2:
                                 if hasattr(model, "predict_proba"):
                                     y_proba = model.predict_proba(X_test)[:, 1]
@@ -544,13 +577,13 @@ def main_app():
 
                 if chosen_classifier_name == "Logistic Regression":
                     C_val = st.slider("Regularization Strength (C)", 0.01, 10.0, 1.0, 0.01)
-                    final_model = LogisticRegression(random_state=42, C=C_val, solver='liblinear')
+                    final_model = LogisticRegression(random_state=42, C=C_val, solver='liblinear', max_iter=1000)
                     model_params = {'C': C_val}
                 elif chosen_classifier_name == "Random Forest Classifier":
                     n_estimators = st.slider("Number of Estimators", 50, 500, 100, 10)
-                    max_depth = st.slider("Max Depth (None for unlimited)", 1, 20, 10)
+                    max_depth = st.slider("Max Depth (0 for unlimited)", 0, 20, 10) # 0 means unlimited
                     final_model = RandomForestClassifier(random_state=42, n_estimators=n_estimators, max_depth=max_depth if max_depth > 0 else None)
-                    model_params = {'n_estimators': n_estimators, 'max_depth': max_depth}
+                    model_params = {'n_estimators': n_estimators, 'max_depth': max_depth if max_depth > 0 else 'None'}
                 elif chosen_classifier_name == "Gradient Boosting Classifier":
                     n_estimators_gb = st.slider("Number of Estimators (GB)", 50, 500, 100, 10)
                     learning_rate_gb = st.slider("Learning Rate (GB)", 0.01, 0.5, 0.1, 0.01)
@@ -585,8 +618,12 @@ def main_app():
                             if len(np.unique(y_test)) == 2 and hasattr(final_model, "predict_proba"):
                                 y_proba = final_model.predict_proba(X_test)[:, 1]
                                 final_roc_auc = roc_auc_score(y_test, y_proba)
+                                st.success(f"✅ {chosen_classifier_name} training complete!")
+                            elif len(np.unique(y_test)) > 2:
+                                st.warning("ROC AUC is primarily for binary classification and not displayed for multi-class problems.")
+                            else:
+                                st.warning("ROC AUC not applicable for single-class target or model without probabilities.")
 
-                            st.success(f"✅ {chosen_classifier_name} training complete!")
 
                             st.subheader("Performance Metrics on Test Set")
                             col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
@@ -600,14 +637,21 @@ def main_app():
                                 if not np.isnan(final_roc_auc):
                                     st.metric("ROC AUC", format_metric(final_roc_auc))
                                 else:
-                                    st.info("ROC AUC not applicable for multi-class or model without probabilities.")
+                                    st.info("ROC AUC not applicable.")
 
                             st.subheader("Confusion Matrix")
                             cm = confusion_matrix(y_test, y_pred)
                             fig_cm, ax_cm = plt.subplots(figsize=(8, 6))
+                            
+                            # Get actual class labels for confusion matrix ticks
+                            if st.session_state.label_encoder:
+                                cm_labels = st.session_state.label_encoder.classes_
+                            else:
+                                cm_labels = [str(x) for x in np.unique(y_test)] # Fallback to string representation of numeric labels
+
                             sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax_cm,
-                                        xticklabels=st.session_state.label_encoder.classes_ if st.session_state.label_encoder else np.unique(y_test),
-                                        yticklabels=st.session_state.label_encoder.classes_ if st.session_state.label_encoder else np.unique(y_test))
+                                        xticklabels=cm_labels,
+                                        yticklabels=cm_labels)
                             ax_cm.set_xlabel('Predicted Label')
                             ax_cm.set_ylabel('True Label')
                             ax_cm.set_title('Confusion Matrix')
@@ -619,13 +663,13 @@ def main_app():
                             if st.session_state.label_encoder:
                                 y_test_labels = st.session_state.label_encoder.inverse_transform(y_test)
                                 y_pred_labels = st.session_state.label_encoder.inverse_transform(y_pred)
-                                target_names = st.session_state.label_encoder.classes_
+                                target_names_report = st.session_state.label_encoder.classes_
                             else:
                                 y_test_labels = y_test
                                 y_pred_labels = y_pred
-                                target_names = [str(x) for x in np.unique(y_test)] # Convert to string for report
+                                target_names_report = [str(x) for x in np.unique(y_test)] # Convert to string for report
 
-                            class_report_text = classification_report(y_test_labels, y_pred_labels, target_names=target_names, zero_division=0)
+                            class_report_text = classification_report(y_test_labels, y_pred_labels, target_names=target_names_report, zero_division=0)
                             st.text(class_report_text)
 
                             st.subheader("Feature Importance")
@@ -633,18 +677,24 @@ def main_app():
                             if hasattr(final_model, 'feature_importances_'):
                                 feature_importances = final_model.feature_importances_
                             elif hasattr(final_model, 'coef_'):
-                                # For linear models, use absolute coefficients
-                                feature_importances = np.abs(final_model.coef_[0]) if final_model.coef_.ndim > 1 else np.abs(final_model.coef_)
-
+                                # For linear models, use absolute coefficients (for binary classification)
+                                if final_model.coef_.ndim > 1 and final_model.coef_.shape[0] == 1: # Binary classification with 2D coef_
+                                    feature_importances = np.abs(final_model.coef_[0])
+                                elif final_model.coef_.ndim == 1: # Binary classification with 1D coef_
+                                    feature_importances = np.abs(final_model.coef_)
+                                else: # Multi-class linear models, sum abs coefficients or take max
+                                    feature_importances = np.sum(np.abs(final_model.coef_), axis=0) # Sum absolute coefficients across classes
+                                    
                             if feature_importances is not None and len(st.session_state.feature_names) == len(feature_importances):
                                 importance_df = pd.DataFrame({
                                     'Feature': st.session_state.feature_names,
                                     'Importance': feature_importances
                                 }).sort_values(by='Importance', ascending=False)
 
-                                fig_fi, ax_fi = plt.subplots(figsize=(10, 6))
-                                sns.barplot(x='Importance', y='Feature', data=importance_df.head(10), ax=ax_fi) # Top 10 features
-                                ax_fi.set_title('Top 10 Feature Importances')
+                                fig_fi, ax_fi = plt.subplots(figsize=(10, min(10, max(5, len(importance_df) * 0.4)))) # Dynamic height
+                                sns.barplot(x='Importance', y='Feature', data=importance_df.head(15), ax=ax_fi) # Top 15 features
+                                ax_fi.set_title('Top Feature Importances')
+                                plt.tight_layout()
                                 st.pyplot(fig_fi)
                                 plt.close(fig_fi)
                             else:
@@ -658,20 +708,28 @@ def main_app():
                             # Add predictions to the original filtered DataFrame
                             # Use X_test.index to map predictions back to original df_filtered rows
                             # Create a DataFrame for predictions with original indices
-                            predictions_df = pd.DataFrame({
-                                'True_Target': y_test,
-                                'Predicted_Target': y_pred
+                            predictions_on_test_set_df = pd.DataFrame({
+                                'True_Target_Encoded': y_test,
+                                'Predicted_Target_Encoded': y_pred
                             }, index=X_test.index)
 
                             # If target was encoded, inverse transform for readability
                             if st.session_state.label_encoder:
-                                predictions_df['True_Target'] = st.session_state.label_encoder.inverse_transform(predictions_df['True_Target'])
-                                predictions_df['Predicted_Target'] = st.session_state.label_encoder.inverse_transform(predictions_df['Predicted_Target'])
+                                predictions_on_test_set_df['True_Target'] = st.session_state.label_encoder.inverse_transform(predictions_on_test_set_df['True_Target_Encoded'])
+                                predictions_on_test_set_df['Predicted_Target'] = st.session_state.label_encoder.inverse_transform(predictions_on_test_set_df['Predicted_Target_Encoded'])
+                            else:
+                                predictions_on_test_set_df['True_Target'] = predictions_on_test_set_df['True_Target_Encoded']
+                                predictions_on_test_set_df['Predicted_Target'] = predictions_on_test_set_df['Predicted_Target_Encoded']
 
-                            # Merge predictions back to the original (filtered) dataframe
-                            # Ensure original_df_with_target is used as it has the original rows after preprocessing's dropna
+                            # Merge predictions back to the original (filtered) dataframe that survived preprocessing
                             df_with_predictions = st.session_state.original_df_with_target.copy()
-                            df_with_predictions = df_with_predictions.merge(predictions_df, left_index=True, right_index=True, how='left')
+                            df_with_predictions = df_with_predictions.merge(predictions_on_test_set_df[['True_Target', 'Predicted_Target']], left_index=True, right_index=True, how='left')
+                            
+                            # For rows not in the test set (i.e., in training set or dropped), fill predictions as 'N/A' or similar
+                            # This ensures the downloaded CSV contains all rows from original_df_with_target
+                            df_with_predictions['True_Target'].fillna('N/A (Train/Dropped)', inplace=True)
+                            df_with_predictions['Predicted_Target'].fillna('N/A (Train/Dropped)', inplace=True)
+
 
                             csv_buffer = io.StringIO()
                             df_with_predictions.to_csv(csv_buffer, index=False)
@@ -682,7 +740,7 @@ def main_app():
                                 mime="text/csv",
                             )
 
-                            # Generate plots for report
+                            # --- Generate plots for report ---
                             cm_plot_bytes = io.BytesIO()
                             fig_cm.savefig(cm_plot_bytes, format='png', bbox_inches='tight')
                             cm_plot_bytes.seek(0)
@@ -711,7 +769,6 @@ def main_app():
                             else:
                                 fi_plot_bytes = None
 
-
                             report_bytes_io = io.BytesIO()
                             document = Document()
                             create_report(
@@ -732,7 +789,8 @@ def main_app():
                                 fi_plot_bytes.getvalue() if fi_plot_bytes else None,
                                 class_report_text,
                                 st.session_state.target_name,
-                                st.session_state.feature_names
+                                st.session_state.feature_names,
+                                class_labels # Pass class labels for report
                             )
                             document.save(report_bytes_io)
                             report_bytes = report_bytes_io.getvalue()
@@ -795,4 +853,3 @@ if not st.session_state.authenticated:
     login_page()
 else:
     main_app()
-
