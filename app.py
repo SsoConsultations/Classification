@@ -293,12 +293,12 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
     
     # Generate more specific insights based on top features
     if feature_names and metrics.get('feature_importances') is not None and len(feature_names) == len(metrics['feature_importances']):
-        importance_df = pd.DataFrame({
+        importance_df_report = pd.DataFrame({ # Use a different name to avoid conflict
             'Feature': feature_names,
             'Importance': metrics['feature_importances']
         }).sort_values(by='Importance', ascending=False)
         
-        top_features = importance_df['Feature'].head(5).tolist() # Top 5 features
+        top_features = importance_df_report['Feature'].head(5).tolist() # Top 5 features
         
         document.add_paragraph(f"**Key Drivers Identified:** The model indicates that features such as **{', '.join(top_features)}** are among the most influential in predicting **{target_name}**. Further investigation into these areas could yield significant insights.")
         document.add_paragraph(f"**Potential Actions:** Consider strategies that target or leverage these key features. For example, if 'MonthlyCharges' is highly important for churn prediction, analyzing pricing strategies or offering tailored plans might be effective.")
@@ -603,6 +603,8 @@ def main_app():
                 if st.button("🚀 Run Classification"):
                     st.header("7️⃣ Classification Results")
                     with st.spinner(f"Training {chosen_classifier_name} and generating results..."):
+                        # Initialize plot figures to None
+                        fig_cm, fig_roc, fig_fi = None, None, None
                         try:
                             # Train the final model on the training data
                             final_model.fit(X_train, y_train)
@@ -615,6 +617,7 @@ def main_app():
                             final_f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
 
                             final_roc_auc = np.nan
+                            y_proba = None # Initialize y_proba
                             if len(np.unique(y_test)) == 2 and hasattr(final_model, "predict_proba"):
                                 y_proba = final_model.predict_proba(X_test)[:, 1]
                                 final_roc_auc = roc_auc_score(y_test, y_proba)
@@ -674,16 +677,17 @@ def main_app():
 
                             st.subheader("Feature Importance")
                             feature_importances = None
+                            # Check for feature_importances_ (tree-based models)
                             if hasattr(final_model, 'feature_importances_'):
                                 feature_importances = final_model.feature_importances_
+                            # Check for coef_ (linear models)
                             elif hasattr(final_model, 'coef_'):
-                                # For linear models, use absolute coefficients (for binary classification)
-                                if final_model.coef_.ndim > 1 and final_model.coef_.shape[0] == 1: # Binary classification with 2D coef_
-                                    feature_importances = np.abs(final_model.coef_[0])
-                                elif final_model.coef_.ndim == 1: # Binary classification with 1D coef_
+                                if final_model.coef_.ndim > 1: # Multi-class or binary with 2D coef_
+                                    # For multi-class, sum absolute coefficients across classes
+                                    # For binary (1, n_features), take the first row
+                                    feature_importances = np.sum(np.abs(final_model.coef_), axis=0)
+                                else: # Binary classification with 1D coef_
                                     feature_importances = np.abs(final_model.coef_)
-                                else: # Multi-class linear models, sum abs coefficients or take max
-                                    feature_importances = np.sum(np.abs(final_model.coef_), axis=0) # Sum absolute coefficients across classes
                                     
                             if feature_importances is not None and len(st.session_state.feature_names) == len(feature_importances):
                                 importance_df = pd.DataFrame({
@@ -746,24 +750,14 @@ def main_app():
                             cm_plot_bytes.seek(0)
 
                             roc_plot_bytes = io.BytesIO()
-                            if len(np.unique(y_test)) == 2 and hasattr(final_model, "predict_proba"):
-                                fpr, tpr, _ = roc_curve(y_test, y_proba)
-                                roc_auc_val = auc(fpr, tpr)
-                                fig_roc, ax_roc = plt.subplots(figsize=(8, 6))
-                                ax_roc.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc_val:.2f})')
-                                ax_roc.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-                                ax_roc.set_xlabel('False Positive Rate')
-                                ax_roc.set_ylabel('True Positive Rate')
-                                ax_roc.set_title('Receiver Operating Characteristic (ROC) Curve')
-                                ax_roc.legend(loc="lower right")
-                                plt.close(fig_roc)
+                            if fig_roc: # Only save if fig_roc was actually created
                                 fig_roc.savefig(roc_plot_bytes, format='png', bbox_inches='tight')
                                 roc_plot_bytes.seek(0)
                             else:
                                 roc_plot_bytes = None
 
                             fi_plot_bytes = io.BytesIO()
-                            if feature_importances is not None:
+                            if fig_fi: # Only save if fig_fi was actually created
                                 fig_fi.savefig(fi_plot_bytes, format='png', bbox_inches='tight')
                                 fi_plot_bytes.seek(0)
                             else:
