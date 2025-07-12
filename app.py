@@ -346,10 +346,10 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
         
         top_features = importance_df_report['Feature'].head(5).tolist()
         
-        # Using the new helper function for bolding
         add_styled_paragraph(document, f"**Key Drivers Identified:** The model indicates that features such as **{', '.join(top_features)}** are among the most influential in predicting **{target_name}**. Further investigation into these areas could yield significant insights.")
-        document.add_paragraph(f"**Potential Actions:** Consider strategies that target or leverage these key features. For example, if 'MonthlyCharges' is highly important for churn prediction, analyzing pricing strategies or offering tailored plans might be effective.")
-        document.add_paragraph(f"**Further Exploration:** Delve deeper into the characteristics of each predicted class (e.g., 'Churn' vs. 'No Churn' customers) based on these important features to craft highly targeted interventions.")
+        # Apply add_styled_paragraph to the specific lines that were missing bolding
+        add_styled_paragraph(document, f"**Potential Actions:** Consider strategies that target or leverage these key features. For example, if 'MonthlyCharges' is highly important for churn prediction, analyzing pricing strategies or offering tailored plans might be effective.")
+        add_styled_paragraph(document, f"**Further Exploration:** Delve deeper into the characteristics of each predicted class (e.g., 'Churn' vs. 'No Churn' customers) based on these important features to craft highly targeted interventions.")
     else:
         document.add_paragraph("Specific prescriptive insights based on feature importance could not be generated as feature importance data was unavailable.")
 
