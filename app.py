@@ -4,17 +4,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder
-from sklearn.model_selection import train_test_split, GridSearchCV # Added GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.svm import SVC # Support Vector Classifier - can be slow on large datasets
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, classification_report, roc_curve, auc, make_scorer # Added make_scorer
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, classification_report, roc_curve, auc, make_scorer
 from docx import Document
 from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 import io
 import warnings
+import re # Import regex module
 from PIL import Image
 
 # Suppress warnings for cleaner app output
@@ -39,7 +40,6 @@ if "feature_names" not in st.session_state:
     st.session_state.feature_names = []
 if "target_name" not in st.session_state:
     st.session_state.target_name = None
-# New session state variables for model recommendation
 if "evaluation_results_with_best_params" not in st.session_state:
     st.session_state.evaluation_results_with_best_params = {}
 if "recommended_model_info" not in st.session_state:
@@ -174,6 +174,26 @@ def preprocess_data(df, target_column_name, numeric_features, categorical_featur
 def format_metric(value):
     return f'{value:.4f}' if isinstance(value, (int, float)) else "N/A"
 
+def add_styled_paragraph(document, text_content):
+    """
+    Adds a paragraph to the document, parsing text for Markdown-like bold (**text**) syntax
+    and applying actual bold formatting.
+    """
+    p = document.add_paragraph()
+    # Split the text by occurrences of **...**
+    # The regex `(\*\*.*?\*\*)` captures the bolded text including the asterisks
+    parts = re.split(r'(\*\*.*?\*\*)', text_content)
+
+    for part in parts:
+        if part.startswith('**') and part.endswith('**'):
+            # This part is intended to be bold
+            run = p.add_run(part[2:-2]) # Remove the asterisks
+            run.bold = True
+        else:
+            # This part is normal text
+            p.add_run(part)
+
+
 # Updated create_report function for Classification with proper classification report table
 def create_report(document, algorithm, params, metrics, data_preview_df, confusion_matrix_plot_bytes, roc_curve_plot_bytes, feature_importance_plot_bytes, classification_report_dict, target_name, feature_names, class_labels, recommended_model_info=None):
     """Generates a comprehensive Word document report for classification."""
@@ -198,25 +218,27 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
         "This report details the supervised classification analysis performed using the Streamlit application. "
         "The goal is to predict the target variable based on the selected features."
     )
-    document.add_paragraph(f"Target Variable: **{target_name}**")
+    # Using the new helper function for bolding
+    add_styled_paragraph(document, f"Target Variable: **{target_name}**")
     document.add_paragraph(f"Classes: {', '.join(class_labels)}")
 
     # --- New section for Model Recommendation in report ---
     if recommended_model_info:
         document.add_heading('2. Model Recommendation', level=2)
-        document.add_paragraph(f"Based on the automated evaluation, the recommended model is: **{recommended_model_info['name']}**")
+        # Using the new helper function for bolding
+        add_styled_paragraph(document, f"Based on the automated evaluation, the recommended model is: **{recommended_model_info['name']}**")
         document.add_paragraph(f"Best parameters found: {', '.join([f'{k}={v}' for k, v in recommended_model_info['best_params'].items()])}")
         document.add_paragraph(f"Achieved {recommended_model_info['metric']}: {format_metric(recommended_model_info['score'])}")
         document.add_paragraph("These parameters serve as a strong starting point for further fine-tuning.")
 
 
-    document.add_heading('3. Classification Parameters', level=2) # Renumbered
+    document.add_heading('3. Classification Parameters', level=2)
     document.add_paragraph(f"Algorithm Used: {algorithm}")
     for param, value in params.items():
         if value is not None:
             document.add_paragraph(f"- {param.replace('_', ' ').title()}: {value}")
 
-    document.add_heading('4. Model Performance Metrics', level=2) # Renumbered
+    document.add_heading('4. Model Performance Metrics', level=2)
     document.add_paragraph(f"Accuracy: {format_metric(metrics.get('accuracy'))}")
     document.add_paragraph(f"Precision: {format_metric(metrics.get('precision'))}")
     document.add_paragraph(f"Recall: {format_metric(metrics.get('recall'))}")
@@ -230,7 +252,7 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
         "ROC AUC measures the area under the Receiver Operating Characteristic curve, indicating the model's ability to distinguish between classes (primarily for binary classification)."
     )
 
-    document.add_heading('5. Detailed Classification Report', level=2) # Renumbered
+    document.add_heading('5. Detailed Classification Report', level=2)
     document.add_paragraph("This report shows the main classification metrics per class.")
     
     report_df = pd.DataFrame(classification_report_dict).transpose()
@@ -270,7 +292,7 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
             else:
                 row_cells[i+1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-    document.add_heading('6. Data Preview (First 5 Rows with Predicted Target)', level=2) # Renumbered
+    document.add_heading('6. Data Preview (First 5 Rows with Predicted Target)', level=2)
     data_table = document.add_table(rows=1, cols=data_preview_df.shape[1])
     data_table.style = 'Table Grid'
     data_table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -291,7 +313,7 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
                 row_cells_data[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
 
-    document.add_heading('7. Model Visualizations', level=2) # Renumbered
+    document.add_heading('7. Model Visualizations', level=2)
     if confusion_matrix_plot_bytes:
         document.add_paragraph("Confusion Matrix: Visualizes the performance of a classification model on a set of test data, showing true vs. predicted counts for each class.")
         document.add_picture(io.BytesIO(confusion_matrix_plot_bytes), width=Inches(5))
@@ -310,7 +332,7 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
     else:
         document.add_paragraph("Feature Importance plot could not be generated (e.g., model does not support it or no features selected).")
 
-    document.add_heading('8. Prescriptive Insights', level=2) # Renumbered
+    document.add_heading('8. Prescriptive Insights', level=2)
     document.add_paragraph(
         "Based on the model's performance and the identified feature importances, here are some potential actionable insights. "
         "These insights aim to translate model findings into practical recommendations for business strategy. "
@@ -324,7 +346,8 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
         
         top_features = importance_df_report['Feature'].head(5).tolist()
         
-        document.add_paragraph(f"**Key Drivers Identified:** The model indicates that features such as **{', '.join(top_features)}** are among the most influential in predicting **{target_name}**. Further investigation into these areas could yield significant insights.")
+        # Using the new helper function for bolding
+        add_styled_paragraph(document, f"**Key Drivers Identified:** The model indicates that features such as **{', '.join(top_features)}** are among the most influential in predicting **{target_name}**. Further investigation into these areas could yield significant insights.")
         document.add_paragraph(f"**Potential Actions:** Consider strategies that target or leverage these key features. For example, if 'MonthlyCharges' is highly important for churn prediction, analyzing pricing strategies or offering tailored plans might be effective.")
         document.add_paragraph(f"**Further Exploration:** Delve deeper into the characteristics of each predicted class (e.g., 'Churn' vs. 'No Churn' customers) based on these important features to craft highly targeted interventions.")
     else:
@@ -507,11 +530,10 @@ def main_app():
                 to find the best performing model.
                 """)
 
-                # Define models and their small parameter grids for GridSearchCV
                 models_and_params = {
                     "Logistic Regression": {
                         'model': LogisticRegression(random_state=42, solver='liblinear', max_iter=1000),
-                        'params': {'C': [0.1, 1.0, 10.0]} # Small grid for quick evaluation
+                        'params': {'C': [0.1, 1.0, 10.0]}
                     },
                     "Random Forest Classifier": {
                         'model': RandomForestClassifier(random_state=42),
@@ -521,21 +543,14 @@ def main_app():
                         'model': GradientBoostingClassifier(random_state=42),
                         'params': {'n_estimators': [50, 100], 'learning_rate': [0.1, 0.2], 'max_depth': [3, 5]}
                     },
-                    # "Support Vector Classifier": { # SVC can be very slow even with small grids
-                    #     'model': SVC(random_state=42, probability=True),
-                    #     'params': {'C': [0.1, 1.0], 'kernel': ['linear', 'rbf']}
-                    # }
                 }
 
                 st.session_state.evaluation_results_with_best_params = {}
                 
-                # Define scoring for GridSearchCV
-                # For binary classification, 'roc_auc' is often preferred. For multi-class, 'f1_weighted' or 'accuracy'.
-                # We'll make it conditional based on number of classes.
                 if len(np.unique(y_train)) == 2:
                     scoring_metric = 'roc_auc'
                 else:
-                    scoring_metric = 'f1_weighted' # Or 'accuracy' if preferred for multi-class
+                    scoring_metric = 'f1_weighted'
 
                 st.write(f"Models will be evaluated using **{scoring_metric.replace('_', ' ').title()}** as the scoring metric.")
 
@@ -547,15 +562,13 @@ def main_app():
                             model = config['model']
                             params = config['params']
 
-                            # Use GridSearchCV for a lightweight hyperparameter search
-                            grid_search = GridSearchCV(model, params, cv=3, scoring=scoring_metric, n_jobs=-1, verbose=0) # cv=3 for speed
+                            grid_search = GridSearchCV(model, params, cv=3, scoring=scoring_metric, n_jobs=-1, verbose=0)
                             grid_search.fit(X_train, y_train)
 
                             best_model = grid_search.best_estimator_
                             best_params = grid_search.best_params_
-                            best_score = grid_search.best_score_ # Best score from cross-validation on training data
+                            best_score = grid_search.best_score_
 
-                            # Evaluate best_model on the test set
                             y_pred_test = best_model.predict(X_test)
                             
                             accuracy_test = accuracy_score(y_test, y_pred_test)
@@ -571,13 +584,13 @@ def main_app():
                             st.session_state.evaluation_results_with_best_params[model_name] = {
                                 'best_model': best_model,
                                 'best_params': best_params,
-                                'best_cv_score': best_score, # Score from CV on training set
+                                'best_cv_score': best_score,
                                 'test_accuracy': accuracy_test,
                                 'test_precision': precision_test,
                                 'test_recall': recall_test,
                                 'test_f1': f1_test,
                                 'test_roc_auc': roc_auc_test,
-                                'scoring_metric_used': scoring_metric # Store which metric was used for CV
+                                'scoring_metric_used': scoring_metric
                             }
                             
                             evaluation_display_data.append({
@@ -622,18 +635,15 @@ def main_app():
                 else:
                     st.info("No models could be evaluated. Please check your data and selections.")
                 
-                # --- Model Recommendation Section ---
-                st.header("6️⃣ Model Recommendation") # New Section
+                st.header("6️⃣ Model Recommendation")
                 st.markdown("""
                 Based on the automated evaluation, here is the recommended model and its best parameters.
                 """)
                 
                 if st.session_state.evaluation_results_with_best_params:
-                    # Filter out models that failed evaluation
                     valid_results = {k: v for k, v in st.session_state.evaluation_results_with_best_params.items() if not np.isnan(v['best_cv_score'])}
                     
                     if valid_results:
-                        # Find the best model based on the scoring metric used in GridSearchCV
                         best_model_name = max(valid_results, key=lambda k: valid_results[k]['best_cv_score'])
                         best_model_info = valid_results[best_model_name]
 
@@ -658,13 +668,12 @@ def main_app():
                     st.info("Run preprocessing and model evaluation to get a recommendation.")
 
 
-                st.header("7️⃣ Choose Final Model for Classification") # Renumbered
+                st.header("7️⃣ Choose Final Model for Classification")
                 st.markdown("""
                 Select your preferred model and adjust its hyperparameters for the final analysis.
                 The sliders will suggest ranges around the recommended parameters.
                 """)
 
-                # Default to recommended model if available, otherwise default to Logistic Regression
                 default_model_selection = "Logistic Regression"
                 if st.session_state.recommended_model_info:
                     default_model_selection = st.session_state.recommended_model_info['name']
@@ -678,13 +687,10 @@ def main_app():
                 final_model = None
                 model_params = {}
                 
-                # Get recommended params for the chosen model, if available
                 current_recommended_params = st.session_state.evaluation_results_with_best_params.get(chosen_classifier_name, {}).get('best_params', {})
 
                 if chosen_classifier_name == "Logistic Regression":
-                    # Default value for C slider
                     default_c = current_recommended_params.get('C', 1.0)
-                    # Suggest a range around the default
                     min_c = max(0.01, default_c * 0.5)
                     max_c = default_c * 2.0
                     C_val = st.slider("Regularization Strength (C)", float(min_c), float(max_c), float(default_c), 0.01)
@@ -692,11 +698,9 @@ def main_app():
                     model_params = {'C': C_val}
 
                 elif chosen_classifier_name == "Random Forest Classifier":
-                    # Default values for n_estimators and max_depth
                     default_n_estimators = current_recommended_params.get('n_estimators', 100)
-                    default_max_depth = current_recommended_params.get('max_depth', 10) # None becomes 10 for slider default
+                    default_max_depth = current_recommended_params.get('max_depth', 10)
 
-                    # Suggest ranges
                     min_n_estimators = max(10, default_n_estimators - 50)
                     max_n_estimators = default_n_estimators + 100
                     n_estimators = st.slider("Number of Estimators", min_n_estimators, max_n_estimators, default_n_estimators, 10)
@@ -709,12 +713,10 @@ def main_app():
                     model_params = {'n_estimators': n_estimators, 'max_depth': max_depth if max_depth > 0 else 'None'}
 
                 elif chosen_classifier_name == "Gradient Boosting Classifier":
-                    # Default values
                     default_n_estimators_gb = current_recommended_params.get('n_estimators', 100)
                     default_learning_rate_gb = current_recommended_params.get('learning_rate', 0.1)
                     default_max_depth_gb = current_recommended_params.get('max_depth', 3)
 
-                    # Suggest ranges
                     min_n_estimators_gb = max(10, default_n_estimators_gb - 50)
                     max_n_estimators_gb = default_n_estimators_gb + 100
                     n_estimators_gb = st.slider("Number of Estimators (GB)", min_n_estimators_gb, max_n_estimators_gb, default_n_estimators_gb, 10)
@@ -735,7 +737,7 @@ def main_app():
                 """)
 
                 if st.button("🚀 Run Classification"):
-                    st.header("8️⃣ Classification Results") # Renumbered
+                    st.header("8️⃣ Classification Results")
                     with st.spinner(f"Training {chosen_classifier_name} and generating results..."):
                         fig_cm, fig_roc, fig_fi = None, None, None
                         try:
@@ -832,7 +834,7 @@ def main_app():
 
                             st.session_state.analysis_completed = True
 
-                            st.subheader("9️⃣ Download Results") # Renumbered
+                            st.subheader("9️⃣ Download Results")
                             st.info("You can download the data with predictions or a comprehensive report.")
 
                             predictions_on_test_set_df = pd.DataFrame({
@@ -913,7 +915,7 @@ def main_app():
                                 st.session_state.target_name,
                                 st.session_state.feature_names,
                                 class_labels,
-                                st.session_state.recommended_model_info # Pass recommendation info
+                                st.session_state.recommended_model_info
                             )
                             document.save(report_bytes_io)
                             report_bytes = report_bytes_io.getvalue()
