@@ -15,7 +15,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 import io
 import warnings
-import re # Import regex module
+import re
 from PIL import Image
 
 # Suppress warnings for cleaner app output
@@ -180,17 +180,13 @@ def add_styled_paragraph(document, text_content):
     and applying actual bold formatting.
     """
     p = document.add_paragraph()
-    # Split the text by occurrences of **...**
-    # The regex `(\*\*.*?\*\*)` captures the bolded text including the asterisks
     parts = re.split(r'(\*\*.*?\*\*)', text_content)
 
     for part in parts:
         if part.startswith('**') and part.endswith('**'):
-            # This part is intended to be bold
-            run = p.add_run(part[2:-2]) # Remove the asterisks
+            run = p.add_run(part[2:-2])
             run.bold = True
         else:
-            # This part is normal text
             p.add_run(part)
 
 
@@ -218,14 +214,12 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
         "This report details the supervised classification analysis performed using the Streamlit application. "
         "The goal is to predict the target variable based on the selected features."
     )
-    # Using the new helper function for bolding
     add_styled_paragraph(document, f"Target Variable: **{target_name}**")
     document.add_paragraph(f"Classes: {', '.join(class_labels)}")
 
     # --- New section for Model Recommendation in report ---
     if recommended_model_info:
         document.add_heading('2. Model Recommendation', level=2)
-        # Using the new helper function for bolding
         add_styled_paragraph(document, f"Based on the automated evaluation, the recommended model is: **{recommended_model_info['name']}**")
         document.add_paragraph(f"Best parameters found: {', '.join([f'{k}={v}' for k, v in recommended_model_info['best_params'].items()])}")
         document.add_paragraph(f"Achieved {recommended_model_info['metric']}: {format_metric(recommended_model_info['score'])}")
@@ -347,7 +341,6 @@ def create_report(document, algorithm, params, metrics, data_preview_df, confusi
         top_features = importance_df_report['Feature'].head(5).tolist()
         
         add_styled_paragraph(document, f"**Key Drivers Identified:** The model indicates that features such as **{', '.join(top_features)}** are among the most influential in predicting **{target_name}**. Further investigation into these areas could yield significant insights.")
-        # Apply add_styled_paragraph to the specific lines that were missing bolding
         add_styled_paragraph(document, f"**Potential Actions:** Consider strategies that target or leverage these key features. For example, if 'MonthlyCharges' is highly important for churn prediction, analyzing pricing strategies or offering tailored plans might be effective.")
         add_styled_paragraph(document, f"**Further Exploration:** Delve deeper into the characteristics of each predicted class (e.g., 'Churn' vs. 'No Churn' customers) based on these important features to craft highly targeted interventions.")
     else:
@@ -516,6 +509,8 @@ def main_app():
                 and is evaluated on the unseen test set.
                 """)
                 test_size = st.slider("Select Test Data Size (%)", 10, 50, 20) / 100
+                # Added the suggested tip line here
+                st.markdown("💡 *A common split is 70% for training and 30% for testing (set slider to 30%).*")
 
                 X_train, X_test, y_train, y_test = train_test_split(
                     st.session_state.X_processed, st.session_state.y_processed,
